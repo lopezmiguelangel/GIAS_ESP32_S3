@@ -1,11 +1,16 @@
+// Sincronización de hora: WiFi + SNTP + RTC DS3231
+
+// C estándar
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
 
+// FreeRTOS
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+// ESP-IDF
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
@@ -15,21 +20,29 @@
 #include "driver/gpio.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
+
+// Proyecto
 #include "rtc_wifi.h"
-
-#define I2C_PORT I2C_NUM_0
-#define DS3231_ADDR 0x68
-
-#define WIFI_RETRIES 1
-#define RTC_RETRIES 10
-#define RTC_DELAY_MS 1000
 
 static const char *TAG = "RTC";
 
-// ==================== DS3231 ====================
+// I2C
+#define I2C_PORT    I2C_NUM_0
+#define DS3231_ADDR 0x68
+
+// Reintentos
+#define WIFI_RETRIES 2
+#define RTC_RETRIES  10
+#define RTC_DELAY_MS 1000
+
+// Convierte BCD <-> decimal (formato del DS3231)
 static uint8_t bcd2dec(uint8_t v) { return ((v >> 4) * 10) + (v & 0x0F); }
 static uint8_t dec2bcd(uint8_t v) { return ((v / 10) << 4) | (v % 10); }
 
+static i2c_master_bus_handle_t g_bus = NULL;
+static i2c_master_dev_handle_t g_dev = NULL;
+
+// Lee fecha y hora del DS3231
 static bool ds3231_get_time(i2c_master_dev_handle_t dev, struct tm *t)
 {
     uint8_t reg = 0x00;
@@ -57,6 +70,7 @@ static bool ds3231_get_time(i2c_master_dev_handle_t dev, struct tm *t)
     return true;
 }
 
+// Escribe fecha y hora en el DS3231 y verifica la escritura
 static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
 {
     uint8_t data[8] = {
@@ -76,6 +90,7 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
 
     esp_err_t err;
 
+    // Escritura con reintentos
     for (int intento = 1; intento <= RTC_RETRIES; intento++) {
 
         err = i2c_master_transmit(dev, data, 8, pdMS_TO_TICKS(100));
@@ -96,6 +111,7 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
 
     vTaskDelay(pdMS_TO_TICKS(500));
 
+    // Verificación con reintentos
     uint8_t reg = 0x00;
     uint8_t received[7];
 
@@ -135,8 +151,8 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
     return true;
 }
 
-// ==================== I2C ====================
-static bool i2c_init(i2c_master_bus_handle_t *bus, i2c_master_dev_handle_t *dev)
+// Inicializa el bus I2C y agrega el DS3231
+static bool i2c_init(void)
 {
     i2c_master_bus_config_t bus_config = {
         .i2c_port = I2C_PORT,
@@ -147,7 +163,7 @@ static bool i2c_init(i2c_master_bus_handle_t *bus, i2c_master_dev_handle_t *dev)
         .flags.enable_internal_pullup = false,
     };
 
-    esp_err_t err = i2c_new_master_bus(&bus_config, bus);
+    esp_err_t err = i2c_new_master_bus(&bus_config, &g_bus);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I2C BUS INIT ERROR: %s", esp_err_to_name(err));
@@ -162,25 +178,25 @@ static bool i2c_init(i2c_master_bus_handle_t *bus, i2c_master_dev_handle_t *dev)
         .scl_speed_hz = 10000,
     };
 
-    err = i2c_master_bus_add_device(*bus, &dev_config, dev);
+    err = i2c_master_bus_add_device(g_bus, &dev_config, &g_dev);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I2C DEVICE ERROR: %s", esp_err_to_name(err));
-        i2c_del_master_bus(*bus);
-        *bus = NULL;
+        i2c_del_master_bus(g_bus);
+        g_bus = NULL;
         return false;
     }
 
     ESP_LOGI(TAG, "I2C DEVICE OK: direccion 0x%02X", DS3231_ADDR);
 
-    err = i2c_master_probe(*bus, DS3231_ADDR, pdMS_TO_TICKS(100));
+    err = i2c_master_probe(g_bus, DS3231_ADDR, pdMS_TO_TICKS(100));
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "RTC PROBE ERROR: %s", esp_err_to_name(err));
-        i2c_master_bus_rm_device(*dev);
-        i2c_del_master_bus(*bus);
-        *dev = NULL;
-        *bus = NULL;
+        i2c_master_bus_rm_device(g_dev);
+        i2c_del_master_bus(g_bus);
+        g_dev = NULL;
+        g_bus = NULL;
         return false;
     }
 
@@ -189,13 +205,17 @@ static bool i2c_init(i2c_master_bus_handle_t *bus, i2c_master_dev_handle_t *dev)
     return true;
 }
 
-static void i2c_deinit(i2c_master_bus_handle_t bus, i2c_master_dev_handle_t dev)
+// Libera el bus I2C y deja los pines en alta impedancia
+void rtc_i2c_deinit(void)
 {
-    if (dev)
-        i2c_master_bus_rm_device(dev);
-
-    if (bus)
-        i2c_del_master_bus(bus);
+    if (g_dev) {
+        i2c_master_bus_rm_device(g_dev);
+        g_dev = NULL;
+    }
+    if (g_bus) {
+        i2c_del_master_bus(g_bus);
+        g_bus = NULL;
+    }
 
     gpio_reset_pin(RTC_I2C_SDA_PIN);
     gpio_reset_pin(RTC_I2C_SCL_PIN);
@@ -207,7 +227,7 @@ static void i2c_deinit(i2c_master_bus_handle_t bus, i2c_master_dev_handle_t dev)
     gpio_set_pull_mode(RTC_I2C_SCL_PIN, GPIO_FLOATING);
 }
 
-// ==================== WiFi ====================
+// Conecta a WiFi y espera asociación al AP
 static bool wifi_connect(const char *ssid, const char *pass)
 {
     nvs_flash_init();
@@ -229,18 +249,19 @@ static bool wifi_connect(const char *ssid, const char *pass)
     esp_wifi_set_config(WIFI_IF_STA, &wc);
     esp_wifi_connect();
 
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 8; i++) {
         wifi_ap_record_t ap;
 
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
             return true;
 
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     return false;
 }
 
+// Libera WiFi, netif y NVS
 static void wifi_deinit(void)
 {
     esp_wifi_stop();
@@ -255,7 +276,7 @@ static void wifi_deinit(void)
     nvs_flash_deinit();
 }
 
-// ==================== SNTP ====================
+// Consulta hora por SNTP y aplica el offset GMT
 static bool sntp_get_time(int gmt_offset_seconds, struct tm *t)
 {
     char tz[32];
@@ -295,19 +316,16 @@ static bool sntp_get_time(int gmt_offset_seconds, struct tm *t)
     return true;
 }
 
-// ==================== API PÚBLICA ====================
+// Punto de entrada: obtiene hora (SNTP + RTC), decide cuál usar y actualiza el reloj interno
 struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
 {
     struct tm rtc_time = {0}, net_time = {0}, result = {0};
-
-    i2c_master_bus_handle_t bus = NULL;
-    i2c_master_dev_handle_t dev = NULL;
 
     bool sntp_ok = false;
     bool rtc_ok = false;
 
     // Obtener hora de internet
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < WIFI_RETRIES; i++) {
         if (wifi_connect(ssid, password)) {
             if (sntp_get_time(gmt * 3600, &net_time)) {
                 sntp_ok = true;
@@ -320,13 +338,13 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
     }
 
     // Leer RTC
-    if (i2c_init(&bus, &dev)) {
+    if (i2c_init()) {
 
         for (int intento = 1; intento <= RTC_RETRIES; intento++) {
 
             ESP_LOGI(TAG, "RTC READ: intento %d", intento);
 
-            if (ds3231_get_time(dev, &rtc_time)) {
+            if (ds3231_get_time(g_dev, &rtc_time)) {
                 ESP_LOGI(TAG, "RTC READ OK (intento %d)", intento);
                 rtc_ok = true;
                 break;
@@ -358,9 +376,10 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
                  net_time.tm_min * 60 +
                  net_time.tm_sec));
 
+        // Si difiere más de 60s o cambia la fecha, actualizar RTC
         if (!fecha_ok || diff_hora > 60) {
 
-            if (ds3231_set_time(dev, &net_time)) {
+            if (ds3231_set_time(g_dev, &net_time)) {
                 ESP_LOGI(TAG, "RTC actualizado y verificado");
                 result = net_time;
             } else {
@@ -379,7 +398,7 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
 
     } else if (sntp_ok) {
 
-        if (ds3231_set_time(dev, &net_time)) {
+        if (ds3231_set_time(g_dev, &net_time)) {
             ESP_LOGI(TAG, "RTC configurado con SNTP y verificado");
             result = net_time;
         } else {
@@ -389,17 +408,16 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
 
     } else {
 
+        // Sin hora utilizable: reiniciar
         ESP_LOGE(TAG, "No hay hora, reiniciando...");
 
-        if (bus || dev)
-            i2c_deinit(bus, dev);
+        rtc_i2c_deinit();
 
         wifi_deinit();
         esp_restart();
     }
 
-    if (bus || dev)
-        i2c_deinit(bus, dev);
+    rtc_i2c_deinit();
 
     wifi_deinit();
 

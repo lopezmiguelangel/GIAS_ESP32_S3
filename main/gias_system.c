@@ -1,104 +1,95 @@
+// Sistema GIAS: grabación de audio, SD/RTC, deep sleep y control de energía
+
+// C estándar
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
 
+// FreeRTOS
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+// ESP-IDF
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_task_wdt.h"
 
+// Proyecto
 #include "gias_system.h"
 #include "sdmmc_manager.h"
 #include "rtc_wifi.h"
 #include "i2s_audio.h"
 
-// ============================================================
-// LED
-// ============================================================
+static const char *TAG = "GIAS";
 
+// LED
 #define PIN_LED GPIO_NUM_48
 #define LED_ON  0
 #define LED_OFF 1
 
-static TaskHandle_t led_task_handle = NULL;
-
-// ============================================================
-// PINES DE ALIMENTACIÓN
-// ============================================================
-
+// Pines de alimentación
 #define POWER_SD_RTC_PIN GPIO_NUM_45
 #define POWER_I2S_PIN    GPIO_NUM_46
-
 #define POWER_ON  0
 #define POWER_OFF 1
 
-// ============================================================
-// GRABACIÓN
-// ============================================================
-
-#define SAMPLES_PER_READ 1024
-#define BLOCK_SD 3072
-#define NUM_GRABACIONES 5
+// Grabación
+#define SAMPLES_PER_READ    1024
 #define PORCENTAJE_ADELANTO 10
 
-static const char *TAG = "GIAS";
+// Reserva de PSRAM que no se usa (margen libre)
+#define PSRAM_RESERVE_BYTES (256 * 1024)
 
-// ============================================================
-// VARIABLES SD
-// ============================================================
+// Bloque máximo por fwrite
+#define SD_WRITE_CHUNK (10 * 1024)
 
-static const char *g_filename = NULL;
-static uint8_t *g_buffer = NULL;
-static uint32_t g_total_bytes = 0;
-static TaskHandle_t sd_task_handle = NULL;
+// Formato WAV fijo
+#define WAV_SAMPLE_RATE 44100
+#define WAV_CHANNELS    1
+#define WAV_BITS        16
+
+// Reintentos de montaje de SD al arrancar
+#define SD_MOUNT_RETRIES 3
+#define SD_POWER_OFF_MS  100
+#define SD_POWER_ON_MS   100
+
+static TaskHandle_t led_task_handle = NULL;
+static TaskHandle_t sd_task_handle  = NULL;
+
+// Buffer compartido entre grabación y SD task
+static const char *g_filename    = NULL;
+static uint8_t    *g_buffer      = NULL;
+static uint32_t    g_total_bytes = 0;
+
+volatile bool sd_busy = false;
 
 static bool write_wav_header(const char *filename, uint32_t data_size);
 static bool create_wav_header(const char *filename);
 
-volatile bool sd_busy = false;
-
-// ============================================================
-// CONTROL DE ALIMENTACIÓN SD + RTC
-// ============================================================
-
+// Enciende la alimentación de SD y RTC
 static void power_sd_rtc_on(void)
 {
+    vTaskDelay(pdMS_TO_TICKS(SD_POWER_OFF_MS));
     gpio_deep_sleep_hold_dis();
     gpio_hold_dis(POWER_SD_RTC_PIN);
     gpio_set_direction(POWER_SD_RTC_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(POWER_SD_RTC_PIN, POWER_ON);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(SD_POWER_ON_MS));
 }
 
+// Apaga la alimentación de SD y RTC (desinicializa lo que esté activo)
 static void power_sd_rtc_off(void)
 {
     sd_deinit();
+    rtc_i2c_deinit();
 
-    // Liberar pines I2C del RTC
-    gpio_reset_pin(RTC_I2C_SDA_PIN);
-    gpio_reset_pin(RTC_I2C_SCL_PIN);
-
-    gpio_set_direction(RTC_I2C_SDA_PIN, GPIO_MODE_INPUT);
-    gpio_set_direction(RTC_I2C_SCL_PIN, GPIO_MODE_INPUT);
-
-    gpio_set_pull_mode(RTC_I2C_SDA_PIN, GPIO_FLOATING);
-    gpio_set_pull_mode(RTC_I2C_SCL_PIN, GPIO_FLOATING);
-
-    // Apagar alimentación SD + RTC
     gpio_set_direction(POWER_SD_RTC_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(POWER_SD_RTC_PIN, POWER_OFF);
-
-    vTaskDelay(pdMS_TO_TICKS(5));
 }
 
-// ============================================================
-// CONTROL DE ALIMENTACIÓN I2S
-// ============================================================
-
+// Enciende la alimentación del I2S
 static void power_i2s_on(void)
 {
     gpio_deep_sleep_hold_dis();
@@ -107,6 +98,7 @@ static void power_i2s_on(void)
     gpio_set_level(POWER_I2S_PIN, POWER_ON);
 }
 
+// Apaga el I2S y su alimentación
 static void power_i2s_off(void)
 {
     i2s_deinit();
@@ -115,18 +107,12 @@ static void power_i2s_off(void)
     gpio_set_level(POWER_I2S_PIN, POWER_OFF);
 }
 
-// ============================================================
-// DEEP SLEEP
-// ============================================================
-
+// Apaga periféricos y entra en deep sleep por N minutos
 void gias_deep_sleep(int minutos)
 {
     ESP_LOGI(TAG, "Deep sleep por %d minutos", minutos);
 
-    // La SD debe estar apagada antes de entrar en sleep
     sd_deinit();
-
-    // Apagar I2S
     i2s_deinit();
 
     // Liberar pines I2C del RTC
@@ -139,17 +125,15 @@ void gias_deep_sleep(int minutos)
     gpio_set_pull_mode(RTC_I2C_SDA_PIN, GPIO_FLOATING);
     gpio_set_pull_mode(RTC_I2C_SCL_PIN, GPIO_FLOATING);
 
-    // GPIO45 -> HIGH durante Deep Sleep
+    // Mantener alimentaciones en HIGH durante deep sleep
     gpio_set_direction(POWER_SD_RTC_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(POWER_SD_RTC_PIN, 1);
     gpio_hold_en(POWER_SD_RTC_PIN);
 
-    // GPIO46 -> HIGH durante Deep Sleep
     gpio_set_direction(POWER_I2S_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(POWER_I2S_PIN, 1);
     gpio_hold_en(POWER_I2S_PIN);
 
-    // Mantener estados durante Deep Sleep
     gpio_deep_sleep_hold_en();
 
     esp_sleep_enable_timer_wakeup(minutos * 60 * 1000000ULL);
@@ -160,13 +144,11 @@ void gias_deep_sleep(int minutos)
     esp_deep_sleep_start();
 }
 
-// ============================================================
-// SD TASK
-// ============================================================
-
+// Contadores acumulados del archivo en curso
 static uint32_t buffers_escritos = 0;
 static uint32_t total_bytes_final = 0;
 
+// Tarea que escribe el buffer de PSRAM a la SD cuando se la notifica
 static void sd_task(void *pvParameters)
 {
     while (1) {
@@ -177,62 +159,71 @@ static void sd_task(void *pvParameters)
 
         uint64_t t_inicio_sd = esp_timer_get_time();
 
-        ESP_LOGI(TAG, "SD Task: Escribiendo buffer %u",
-                 buffers_escritos + 1);
+        ESP_LOGI(TAG, "SD Task: Escribiendo buffer %u", buffers_escritos + 1);
 
         power_sd_rtc_on();
-
         sd_init(false);
 
         if (is_sd_mounted()) {
 
-            // ------------------------------------------------
-            // Escribir audio
-            // ------------------------------------------------
-
+            // Escribir audio en bloques
             FILE *f = fopen(g_filename, "ab");
 
             if (f) {
 
-                fwrite(g_buffer, 1, g_total_bytes, f);
+                size_t total_escrito = 0;
+                bool error_escritura = false;
+
+                while (total_escrito < g_total_bytes) {
+
+                    size_t restante = g_total_bytes - total_escrito;
+                    size_t bloque = restante > SD_WRITE_CHUNK ? SD_WRITE_CHUNK : restante;
+
+                    size_t escritos = fwrite(g_buffer + total_escrito, 1, bloque, f);
+
+                    if (escritos != bloque) {
+                        ESP_LOGE(TAG, "ERROR fwrite: %u/%u bytes",
+                                 (unsigned)escritos, (unsigned)bloque);
+                        error_escritura = true;
+                        break;
+                    }
+
+                    total_escrito += escritos;
+                }
+
+                if (!error_escritura) {
+                    ESP_LOGI(TAG, "fwrite OK: %u bytes", (unsigned)total_escrito);
+
+                    buffers_escritos++;
+                    total_bytes_final += total_escrito;
+
+                    ESP_LOGI(TAG,
+                             "SD Task: Buffer %u escrito (%u bytes totales)",
+                             buffers_escritos, total_bytes_final);
+
+                    write_wav_header(g_filename, total_bytes_final);
+
+                    ESP_LOGI(TAG,
+                             "SD Task: Header WAV actualizado (%u bytes)",
+                             total_bytes_final);
+                }
 
                 fclose(f);
-
-                buffers_escritos++;
-
-                total_bytes_final += g_total_bytes;
-
-                ESP_LOGI(TAG,
-                         "SD Task: Buffer %u escrito (%u bytes totales)",
-                         buffers_escritos,
-                         total_bytes_final);
-
-                write_wav_header(g_filename, total_bytes_final);
-
-                ESP_LOGI(TAG,
-                         "SD Task: Header WAV actualizado (%u bytes)",
-                         total_bytes_final);
             }
         }
-
-        sd_deinit();
 
         power_sd_rtc_off();
 
         uint64_t t_fin_sd = esp_timer_get_time();
 
-        ESP_LOGI(TAG,
-                 "Ciclo SD: %.3f segundos",
+        ESP_LOGI(TAG, "Ciclo SD: %.3f segundos",
                  (t_fin_sd - t_inicio_sd) / 1000000.0);
 
         sd_busy = false;
     }
 }
 
-// ============================================================
-// CREAR SD TASK
-// ============================================================
-
+// Crea la tarea de escritura a SD en Core 1
 void gias_create_sd_task(void)
 {
     xTaskCreatePinnedToCore(
@@ -248,10 +239,7 @@ void gias_create_sd_task(void)
     ESP_LOGI(TAG, "SD Task creada en Core 1");
 }
 
-// ============================================================
-// WAV HEADER
-// ============================================================
-
+// Cabecera WAV (44 bytes estándar)
 typedef struct {
 
     char ChunkID[4];
@@ -276,10 +264,7 @@ typedef struct {
 
 } wav_header_t;
 
-// ============================================================
-// ACTUALIZAR HEADER WAV
-// ============================================================
-
+// Reescribe la cabecera WAV de un archivo existente con el tamaño de datos actual
 static bool write_wav_header(const char *filename, uint32_t data_size)
 {
     FILE *f = fopen(filename, "r+");
@@ -298,13 +283,13 @@ static bool write_wav_header(const char *filename, uint32_t data_size)
         .Subchunk1Size = 16,
 
         .AudioFormat = 1,
-        .NumChannels = 1,
+        .NumChannels = WAV_CHANNELS,
 
-        .SampleRate = 44100,
-        .ByteRate = 44100 * 1 * 16 / 8,
+        .SampleRate = WAV_SAMPLE_RATE,
+        .ByteRate = WAV_SAMPLE_RATE * WAV_CHANNELS * WAV_BITS / 8,
 
-        .BlockAlign = 1 * 16 / 8,
-        .BitsPerSample = 16,
+        .BlockAlign = WAV_CHANNELS * WAV_BITS / 8,
+        .BitsPerSample = WAV_BITS,
 
         .Subchunk2ID = {'d', 'a', 't', 'a'},
         .Subchunk2Size = data_size
@@ -321,10 +306,7 @@ static bool write_wav_header(const char *filename, uint32_t data_size)
     return true;
 }
 
-// ============================================================
-// CREAR HEADER WAV
-// ============================================================
-
+// Crea un archivo WAV vacío con cabecera inicial
 static bool create_wav_header(const char *filename)
 {
     FILE *f = fopen(filename, "w");
@@ -344,13 +326,13 @@ static bool create_wav_header(const char *filename)
         .Subchunk1Size = 16,
 
         .AudioFormat = 1,
-        .NumChannels = 1,
+        .NumChannels = WAV_CHANNELS,
 
-        .SampleRate = 44100,
-        .ByteRate = 44100 * 1 * 16 / 8,
+        .SampleRate = WAV_SAMPLE_RATE,
+        .ByteRate = WAV_SAMPLE_RATE * WAV_CHANNELS * WAV_BITS / 8,
 
-        .BlockAlign = 1 * 16 / 8,
-        .BitsPerSample = 16,
+        .BlockAlign = WAV_CHANNELS * WAV_BITS / 8,
+        .BitsPerSample = WAV_BITS,
 
         .Subchunk2ID = {'d', 'a', 't', 'a'},
         .Subchunk2Size = 0
@@ -363,112 +345,67 @@ static bool create_wav_header(const char *filename)
     return true;
 }
 
-// ============================================================
-// RECORDING
-// ============================================================
-
+// Graba audio en archivos WAV, rotando a medianoche
 void gias_record_start(int minutos, struct tm *current_time)
 {
     if (minutos <= 0) {
-
         ESP_LOGW(TAG, "Minutos <= 0, no se graba nada");
-
         return;
     }
 
     struct tm tiempo_actual = *current_time;
-
     int minutos_restantes = minutos;
 
-    ESP_LOGI(TAG,
-             "Grabación solicitada: %d minutos desde %02d:%02d:%02d",
+    ESP_LOGI(TAG, "Grabación solicitada: %d minutos desde %02d:%02d:%02d",
              minutos,
              tiempo_actual.tm_hour,
              tiempo_actual.tm_min,
              tiempo_actual.tm_sec);
 
-    // --------------------------------------------------------
-    // Calcular PSRAM
-    // --------------------------------------------------------
+    // Calcular tamaño del buffer PSRAM
+    size_t bytes_per_read = SAMPLES_PER_READ * sizeof(int16_t);
 
-    size_t bytes_per_read =
-        SAMPLES_PER_READ * sizeof(int16_t);
-
-    size_t psram_free =
-        heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-
-    size_t psram_to_use =
-        psram_free - (256 * 1024);
-
-    psram_to_use -=
-        (psram_to_use % bytes_per_read);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t psram_to_use = psram_free - PSRAM_RESERVE_BYTES;
+    psram_to_use -= (psram_to_use % bytes_per_read);
 
     if (psram_to_use == 0) {
-
         ESP_LOGE(TAG, "PSRAM insuficiente");
-
         return;
     }
 
-    uint32_t max_reads =
-        psram_to_use / bytes_per_read;
-
-    uint32_t ciclo_inicio =
-        max_reads -
-        (max_reads * PORCENTAJE_ADELANTO / 100);
-
-    size_t bytes_por_ciclo =
-        max_reads * bytes_per_read;
+    uint32_t max_reads = psram_to_use / bytes_per_read;
+    uint32_t ciclo_inicio = max_reads - (max_reads * PORCENTAJE_ADELANTO / 100);
+    size_t bytes_por_ciclo = max_reads * bytes_per_read;
 
     ESP_LOGI(TAG,
              "Configuración PSRAM: %u bytes por ciclo, %u lecturas, notificar en %u (%.1f%%)",
-             bytes_por_ciclo,
-             max_reads,
-             ciclo_inicio,
+             bytes_por_ciclo, max_reads, ciclo_inicio,
              100.0f - PORCENTAJE_ADELANTO);
 
-    // --------------------------------------------------------
-    // Reservar buffer PSRAM
-    // --------------------------------------------------------
-
-    uint8_t *psram_buffer =
-        heap_caps_malloc(psram_to_use, MALLOC_CAP_SPIRAM);
+    // Reservar buffer en PSRAM
+    uint8_t *psram_buffer = heap_caps_malloc(psram_to_use, MALLOC_CAP_SPIRAM);
 
     if (!psram_buffer) {
-
         ESP_LOGE(TAG, "No se pudo reservar PSRAM");
-
         return;
     }
 
-    // --------------------------------------------------------
-    // Crear SD task
-    // --------------------------------------------------------
-
+    // Crear la tarea SD si aún no existe
     if (sd_task_handle == NULL) {
         gias_create_sd_task();
     }
 
-    // --------------------------------------------------------
-    // Iniciar I2S
-    // --------------------------------------------------------
-
+    // Arrancar I2S
     power_i2s_on();
-
     i2s_init();
-
-    vTaskDelay(pdMS_TO_TICKS(50));
 
     int16_t sample_buffer[SAMPLES_PER_READ];
 
     uint32_t total_bytes_escritos_general = 0;
-
     int archivo_num = 1;
 
-    // ========================================================
-    // BUCLE DE ARCHIVOS
-    // ========================================================
-
+    // Bucle de archivos: uno por día hasta agotar minutos
     while (minutos_restantes > 0) {
 
         int minutos_hasta_medianoche =
@@ -484,158 +421,87 @@ void gias_record_start(int minutos, struct tm *current_time)
             ? minutos_hasta_medianoche
             : minutos_restantes;
 
+        // Si ya es medianoche, saltar al día siguiente
         if (minutos_este_archivo <= 0) {
 
             tiempo_actual.tm_hour = 0;
             tiempo_actual.tm_min = 0;
             tiempo_actual.tm_sec = 0;
-
             tiempo_actual.tm_mday++;
 
             mktime(&tiempo_actual);
-
             continue;
         }
 
-        // ----------------------------------------------------
-        // Nombre archivo
-        // ----------------------------------------------------
-
+        // Nombre del archivo según fecha/hora
         char filename[64];
 
-        ESP_LOGI(TAG,
-                 "DEBUG: tm_year=%d, tm_mon=%d, tm_mday=%d, tm_hour=%d, tm_min=%d, tm_sec=%d",
-                 tiempo_actual.tm_year,
-                 tiempo_actual.tm_mon,
-                 tiempo_actual.tm_mday,
-                 tiempo_actual.tm_hour,
-                 tiempo_actual.tm_min,
-                 tiempo_actual.tm_sec);
+        strftime(filename, sizeof(filename),
+                 "/sdcard/%y%m%d_%H%M%S.wav",
+                 &tiempo_actual);
 
-        strftime(
-            filename,
-            sizeof(filename),
-            "/sdcard/%y%m%d_%H%M%S.wav",
-            &tiempo_actual
-        );
+        ESP_LOGI(TAG, "=== Archivo %d: %s ===", archivo_num, filename);
 
-        ESP_LOGI(TAG,
-                 "=== Archivo %d: %s ===",
-                 archivo_num,
-                 filename);
-
-        int hora_fin =
-            tiempo_actual.tm_hour +
-            (minutos_este_archivo / 60);
-
-        int min_fin =
-            tiempo_actual.tm_min +
-            (minutos_este_archivo % 60);
+        int hora_fin = tiempo_actual.tm_hour + (minutos_este_archivo / 60);
+        int min_fin  = tiempo_actual.tm_min  + (minutos_este_archivo % 60);
 
         if (min_fin >= 60) {
-
             min_fin -= 60;
             hora_fin++;
         }
 
-        ESP_LOGI(TAG,
-                 "Grabando %d minutos (hasta %02d:%02d)",
-                 minutos_este_archivo,
-                 hora_fin % 24,
-                 min_fin);
+        ESP_LOGI(TAG, "Grabando %d minutos (hasta %02d:%02d)",
+                 minutos_este_archivo, hora_fin % 24, min_fin);
 
-        // ----------------------------------------------------
-        // Crear header WAV
-        // ----------------------------------------------------
-
+        // Crear cabecera WAV
         power_sd_rtc_on();
-
         sd_init(false);
 
         if (!create_wav_header(filename)) {
-
-            ESP_LOGE(TAG,
-                     "Error creando header WAV para %s",
-                     filename);
-
-            sd_deinit();
-
+            ESP_LOGE(TAG, "Error creando header WAV para %s", filename);
             power_sd_rtc_off();
-
             break;
         }
 
-        sd_deinit();
-
         power_sd_rtc_off();
 
-        // ----------------------------------------------------
-        // Grabar archivo
-        // ----------------------------------------------------
-
         uint32_t total_bytes_escritos_archivo = 0;
-
         uint32_t ciclo_actual = 0;
 
-        uint64_t start_time =
-            esp_timer_get_time();
+        uint64_t start_time = esp_timer_get_time();
+        uint64_t duration_us = (uint64_t)minutos_este_archivo * 60 * 1000000ULL;
 
-        uint64_t duration_us =
-            (uint64_t)minutos_este_archivo *
-            60 *
-            1000000ULL;
-
-        // ====================================================
-        // CICLOS
-        // ====================================================
-
+        // Ciclos de grabación dentro del archivo
         while ((esp_timer_get_time() - start_time) < duration_us) {
 
             ciclo_actual++;
 
-            ESP_LOGI(TAG,
-                     "Ciclo %d del archivo %d",
-                     ciclo_actual,
-                     archivo_num);
+            ESP_LOGI(TAG, "Ciclo %d del archivo %d", ciclo_actual, archivo_num);
 
             uint32_t reads_done = 0;
-
             bool esperando_escritura = false;
 
-            uint64_t t_inicio_ciclo =
-                esp_timer_get_time();
+            uint64_t t_inicio_ciclo = esp_timer_get_time();
 
+            // Llenar el buffer PSRAM con muestras de I2S
             while (reads_done < max_reads) {
 
-                size_t samples =
-                    i2s_read_samples(
-                        sample_buffer,
-                        SAMPLES_PER_READ,
-                        pdMS_TO_TICKS(1000)
-                    );
+                size_t samples = i2s_read_samples(
+                    sample_buffer, SAMPLES_PER_READ, pdMS_TO_TICKS(1000)
+                );
 
                 if (samples > 0) {
 
-                    size_t bytes_to_copy =
-                        samples * sizeof(int16_t);
+                    size_t bytes_to_copy = samples * sizeof(int16_t);
 
-                    memcpy(
-                        psram_buffer +
-                        (reads_done * bytes_per_read),
-
-                        sample_buffer,
-
-                        bytes_to_copy
-                    );
+                    memcpy(psram_buffer + (reads_done * bytes_per_read),
+                           sample_buffer,
+                           bytes_to_copy);
 
                     reads_done++;
 
-                    // ----------------------------------------
-                    // Notificar al 90%
-                    // ----------------------------------------
-
-                    if (reads_done == ciclo_inicio &&
-                        !esperando_escritura) {
+                    // Al llegar al 90%, notificar a la SD task
+                    if (reads_done == ciclo_inicio && !esperando_escritura) {
 
                         ESP_LOGI(TAG,
                                  "Ciclo %d: 90%% lleno, notificando SD task",
@@ -643,8 +509,8 @@ void gias_record_start(int minutos, struct tm *current_time)
 
                         esperando_escritura = true;
 
-                        g_filename = filename;
-                        g_buffer = psram_buffer;
+                        g_filename    = filename;
+                        g_buffer      = psram_buffer;
                         g_total_bytes = bytes_por_ciclo;
 
                         if (sd_task_handle) {
@@ -654,132 +520,103 @@ void gias_record_start(int minutos, struct tm *current_time)
                 }
             }
 
-            uint64_t t_fin_grabacion =
-                esp_timer_get_time();
+            uint64_t t_fin_grabacion = esp_timer_get_time();
 
-            ESP_LOGI(TAG,
-                     "Ciclo grabación: %.3f segundos",
-                     (t_fin_grabacion - t_inicio_ciclo) /
-                     1000000.0);
+            ESP_LOGI(TAG, "Ciclo grabación: %.3f segundos",
+                     (t_fin_grabacion - t_inicio_ciclo) / 1000000.0);
 
-            // -----------------------------------------------
-            // Esperar SD
-            // -----------------------------------------------
-
+            // Esperar a que la SD termine de escribir
             while (sd_busy) {
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
 
-            total_bytes_escritos_archivo +=
-                bytes_por_ciclo;
-
-            total_bytes_escritos_general +=
-                bytes_por_ciclo;
+            total_bytes_escritos_archivo += bytes_por_ciclo;
+            total_bytes_escritos_general += bytes_por_ciclo;
 
             ESP_LOGI(TAG,
                      "Ciclo %d completado. Archivo acumula: %u bytes",
-                     ciclo_actual,
-                     total_bytes_escritos_archivo);
+                     ciclo_actual, total_bytes_escritos_archivo);
         }
 
-        // ====================================================
-        // HEADER FINAL
-        // ====================================================
-
+        // Actualizar cabecera final con el tamaño real
         power_sd_rtc_on();
-
         sd_init(false);
 
-        if (write_wav_header(
-                filename,
-                total_bytes_escritos_archivo)) {
-
-            ESP_LOGI(TAG,
-                     "Header WAV finalizado: %s (%u bytes datos)",
-                     filename,
-                     total_bytes_escritos_archivo);
-
+        if (write_wav_header(filename, total_bytes_escritos_archivo)) {
+            ESP_LOGI(TAG, "Header WAV finalizado: %s (%u bytes datos)",
+                     filename, total_bytes_escritos_archivo);
         } else {
-
-            ESP_LOGE(TAG,
-                     "Error actualizando header final de %s",
-                     filename);
+            ESP_LOGE(TAG, "Error actualizando header final de %s", filename);
         }
-
-        sd_deinit();
 
         power_sd_rtc_off();
 
-        // ====================================================
-        // ACTUALIZAR TIEMPO
-        // ====================================================
-
-        minutos_restantes -=
-            minutos_este_archivo;
-
-        tiempo_actual.tm_min +=
-            minutos_este_archivo;
-
+        // Avanzar el reloj interno del bloque
+        minutos_restantes -= minutos_este_archivo;
+        tiempo_actual.tm_min += minutos_este_archivo;
         mktime(&tiempo_actual);
 
         archivo_num++;
     }
 
-    // ========================================================
-    // FINALIZAR I2S
-    // ========================================================
-
-    i2s_deinit();
-
+    // Apagar I2S y liberar buffer
     power_i2s_off();
 
-    // Esperar última escritura
     while (sd_busy) {
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     free(psram_buffer);
 
-    ESP_LOGI(TAG,
-             "Grabación completada. Total: %u bytes en %d archivos",
-             total_bytes_escritos_general,
-             archivo_num - 1);
+    ESP_LOGI(TAG, "Grabación completada. Total: %u bytes en %d archivos",
+             total_bytes_escritos_general, archivo_num - 1);
 }
 
-// ============================================================
-// LED STATUS TASK
-// ============================================================
-
+// Parpadeo lento del LED para indicar que el sistema está vivo
 static void led_status_task(void *pvParameters)
 {
     while (1) {
-
         gpio_set_level(PIN_LED, LED_ON);
-
         vTaskDelay(pdMS_TO_TICKS(100));
-
         gpio_set_level(PIN_LED, LED_OFF);
-
         vTaskDelay(pdMS_TO_TICKS(10000));
     }
 }
 
-// ============================================================
-// GIAS INIT
-// ============================================================
-void gias_error_handler(void)
+// Detiene la tarea LED y parpadea un código antes de reiniciar
+void gias_error_handler(int titileos)
 {
     if (led_task_handle != NULL) {
         vTaskDelete(led_task_handle);
         led_task_handle = NULL;
     }
 
+    gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
+
+    // Preámbulo fijo
+    for (int i = 0; i < 10; i++) {
+        gpio_set_level(PIN_LED, LED_ON);
+        vTaskDelay(pdMS_TO_TICKS(250));
+        gpio_set_level(PIN_LED, LED_OFF);
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+
+    // Código: "titileos" destellos lentos
+    for (int i = 0; i < titileos; i++) {
+        gpio_set_level(PIN_LED, LED_ON);
+        vTaskDelay(pdMS_TO_TICKS(2500));
+        gpio_set_level(PIN_LED, LED_OFF);
+        vTaskDelay(pdMS_TO_TICKS(2500));
+    }
+
+    // Reinicio
     gpio_set_level(PIN_LED, LED_ON);
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(10000));
 
     esp_restart();
 }
 
+// Inicializa pines de alimentación, LED y tarea de parpadeo
 void gias_init(void)
 {
     gpio_deep_sleep_hold_dis();
@@ -796,121 +633,88 @@ void gias_init(void)
     gpio_set_level(PIN_LED, LED_OFF);
 
     xTaskCreate(led_status_task, "led_status", 2048, NULL, 1, &led_task_handle);
+    vTaskDelay(pdMS_TO_TICKS(50));
 }
 
-// ============================================================
-// GIAS STATUS
-// ============================================================
-
+// Consulta el estado actual: SD, config, hora y calendario
 gias_status_t gias_get_status(void)
 {
     gias_status_t status = {0};
 
     char ssid[32] = {0};
     char password[64] = {0};
-
     int gmt = 0;
 
-    ESP_LOGI(TAG, "1. Encendiendo SD+RTC");
+    bool sd_ok = false;
 
-    power_sd_rtc_on();
+    // Ciclo de power + montaje con reintentos
+    for (int intento = 1; intento <= SD_MOUNT_RETRIES; intento++) {
 
-    sd_init(true);
-
-    if (!is_sd_mounted()) {
-
-        ESP_LOGE(TAG, "Error: SD no montada");
-
-        sd_deinit();
+        ESP_LOGI(TAG, "Intento %d/%d montando SD", intento, SD_MOUNT_RETRIES);
 
         power_sd_rtc_off();
 
-        status.estado = -1;
+        power_sd_rtc_on();
 
+        sd_init(false);
+
+        if (is_sd_mounted()) {
+            sd_ok = true;
+            break;
+        }
+
+        ESP_LOGW(TAG, "Intento %d falló", intento);
+    }
+
+    if (!sd_ok) {
+        ESP_LOGE(TAG, "Error: SD no montada tras %d intentos", SD_MOUNT_RETRIES);
+        power_sd_rtc_off();
+        status.estado = -1;
         return status;
     }
 
-    ESP_LOGI(TAG, "2. SD montada OK");
+    ESP_LOGI(TAG, "SD montada OK");
 
     if (!sd_check_and_create_files()) {
-
-        ESP_LOGE(TAG,
-                 "Error: Archivos config.txt o calendar.csv no existen");
-
-        sd_deinit();
-
+        ESP_LOGE(TAG, "Error: Archivos config.txt o calendar.csv no existen");
         power_sd_rtc_off();
-
         status.estado = -1;
-
         return status;
     }
 
-    ESP_LOGI(TAG, "3. Archivos verificados");
+    ESP_LOGI(TAG, "Archivos verificados");
 
     if (!sd_get_config(ssid, password, &gmt)) {
-
-        ESP_LOGE(TAG,
-                 "Error: No se pudo leer config.txt");
-
-        sd_deinit();
-
+        ESP_LOGE(TAG, "Error: No se pudo leer config.txt");
         power_sd_rtc_off();
-
         status.estado = -1;
-
         return status;
     }
 
-    ESP_LOGI(TAG,
-             "4. Config leída (SSID=%s, GMT=%d)",
-             ssid,
-             gmt);
+    ESP_LOGI(TAG, "Config leída (SSID=%s, GMT=%d)", ssid, gmt);
+    ESP_LOGI(TAG, "Sincronizando RTC con WiFi...");
 
-    ESP_LOGI(TAG,
-             "5. Sincronizando RTC con WiFi...");
+    status.hora = rtc_wifi_sync(ssid, password, gmt);
 
-    status.hora =
-        rtc_wifi_sync(
-            ssid,
-            password,
-            gmt
-        );
-
-    ESP_LOGI(TAG,
-             "6. Hora obtenida: %02d:%02d:%02d",
+    ESP_LOGI(TAG, "Hora obtenida: %02d:%02d:%02d",
              status.hora.tm_hour,
              status.hora.tm_min,
              status.hora.tm_sec);
 
-    ESP_LOGI(TAG,
-             "7. Leyendo calendario...");
+    ESP_LOGI(TAG, "Leyendo calendario...");
 
-    sd_check_calendar(
-        &status.hora,
-        &status.estado,
-        &status.minutos
-    );
+    sd_check_calendar(&status.hora, &status.estado, &status.minutos);
 
     if (status.estado == -1) {
-
-        ESP_LOGE(TAG,
-                 "Error: No se pudo leer calendar.csv");
-
+        ESP_LOGE(TAG, "Error: No se pudo leer calendar.csv");
     } else {
-
-        ESP_LOGI(TAG,
-                 "8. Calendario: estado=%d minutos=%d",
-                 status.estado,
-                 status.minutos);
+        ESP_LOGI(TAG, "Calendario: estado=%d minutos=%d",
+                 status.estado, status.minutos);
     }
-
-
-    sd_deinit();
 
     power_sd_rtc_off();
 
-    ESP_LOGI(TAG, "9. SD+RTC apagados");
+    ESP_LOGI(TAG, "SD+RTC apagados");
 
     return status;
 }

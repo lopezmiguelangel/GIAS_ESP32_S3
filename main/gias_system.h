@@ -18,6 +18,6 @@ void gias_led_green(void);
 void gias_led_off(void);
 void gias_log_init(void);
 void gias_log_flush(void);
-void gias_error_handler(void);
+void gias_error_handler(int titileos);
 
 #endif

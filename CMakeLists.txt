@@ -5,4 +5,4 @@
 cmake_minimum_required(VERSION 3.16)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(GIAS_2026)
+project(GIAS_2026 VERSION 1.1.0)
