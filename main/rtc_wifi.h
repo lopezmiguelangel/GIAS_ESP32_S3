@@ -13,5 +13,7 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt);
 
 // Libera el bus I2C y deja los pines en alta impedancia
 void rtc_i2c_deinit(void);
+void rtc_power_on(void);
+void rtc_power_off(void);
 
 #endif

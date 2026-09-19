@@ -18,6 +18,7 @@
 // Proyecto
 #include "sdmmc_manager.h"
 #include "gias_system.h"
+#include "led.h"
 
 static const char *TAG = "SDMMC_MANAGER";
 
@@ -30,7 +31,7 @@ static const char *TAG = "SDMMC_MANAGER";
 #define MMC_D1   GPIO_NUM_12
 
 // Velocidad de la SD
-#define MMC_SPEED 40000
+static int sd_speed_khz = 20000;
 
 static sdmmc_card_t *card = NULL;
 static bool is_initialized = false;
@@ -90,118 +91,84 @@ static void sd_create_default_calendar(void)
 bool sd_init(bool startup)
 {
     if (is_initialized) {
-        ESP_LOGI(TAG, "SD ya inicializada");
+        ESP_LOGI(TAG, "SD ya inicializada a %d MHz", sd_speed_khz / 1000);
         return true;
     }
 
-    // Montaje normal: un solo intento
-    if (!startup) {
+    const int velocidades[] = {25000, 20000};
 
-        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-        host.flags = SDMMC_HOST_FLAG_1BIT;
-        host.max_freq_khz = MMC_SPEED;
+    for (int velocidad = 0; velocidad < 2; velocidad++) {
 
-        sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-        slot.width = 1;
-        slot.clk = MMC_CLK;
-        slot.cmd = MMC_CMD;
-        slot.d0  = MMC_D0;
-        slot.d1  = MMC_D1;
-        slot.d2  = MMC_D2;
-        slot.d3  = MMC_D3;
-        slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+        int speed_khz = velocidades[velocidad];
 
-        esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
-            .format_if_mount_failed = false,
-            .max_files = 4,
-            .allocation_unit_size = 16 * 1024
-        };
+        for (int intento = 1; intento <= 3; intento++) {
 
-        ESP_LOGI(TAG, "Montando SD a %lu MHz", MMC_SPEED / 1000);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &mount_cfg, &card);
+            ESP_LOGI(TAG, "Intento %d/3 montando SD a %d MHz", intento, speed_khz / 1000);
 
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Error montando SD a %lu MHz", MMC_SPEED / 1000);
+            vTaskDelay(pdMS_TO_TICKS(100));
+
+            sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+            host.flags = SDMMC_HOST_FLAG_1BIT;
+            host.max_freq_khz = speed_khz;
+
+            sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+            slot.width = 1;
+            slot.clk = MMC_CLK;
+            slot.cmd = MMC_CMD;
+            slot.d0  = MMC_D0;
+            slot.d1  = MMC_D1;
+            slot.d2  = MMC_D2;
+            slot.d3  = MMC_D3;
+            slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+            esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
+                .format_if_mount_failed = false,
+                .max_files = 4,
+                .allocation_unit_size = 16 * 1024
+            };
+
+            esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &mount_cfg, &card);
+
+            if (ret == ESP_OK) {
+
+                is_initialized = true;
+                sd_speed_khz = speed_khz;
+
+                ESP_LOGI(TAG, "SD montada correctamente a %d MHz", sd_speed_khz / 1000);
+
+                return true;
+            }
+
             card = NULL;
-            return false;
+
+            ESP_LOGW(TAG, "Falló montaje a %d MHz (intento %d/3)", speed_khz / 1000, intento);
+
+            sdmmc_host_deinit();
+
+            gpio_reset_pin(MMC_CLK);
+            gpio_reset_pin(MMC_CMD);
+            gpio_reset_pin(MMC_D0);
+            gpio_reset_pin(MMC_D1);
+            gpio_reset_pin(MMC_D2);
+            gpio_reset_pin(MMC_D3);
+
+            gpio_set_direction(MMC_CLK, GPIO_MODE_INPUT);
+            gpio_set_direction(MMC_CMD, GPIO_MODE_INPUT);
+            gpio_set_direction(MMC_D0, GPIO_MODE_INPUT);
+            gpio_set_direction(MMC_D1, GPIO_MODE_INPUT);
+            gpio_set_direction(MMC_D2, GPIO_MODE_INPUT);
+            gpio_set_direction(MMC_D3, GPIO_MODE_INPUT);
+
+            gpio_set_pull_mode(MMC_CLK, GPIO_FLOATING);
+            gpio_set_pull_mode(MMC_CMD, GPIO_FLOATING);
+            gpio_set_pull_mode(MMC_D0, GPIO_FLOATING);
+            gpio_set_pull_mode(MMC_D1, GPIO_FLOATING);
+            gpio_set_pull_mode(MMC_D2, GPIO_FLOATING);
+            gpio_set_pull_mode(MMC_D3, GPIO_FLOATING);
         }
-
-        is_initialized = true;
-        ESP_LOGI(TAG, "SD montada a %lu MHz", MMC_SPEED / 1000);
-        vTaskDelay(pdMS_TO_TICKS(50));
-
-        return true;
     }
 
-    // Arranque: probar 3 veces a 20 MHz
-    for (int intento = 1; intento <= 3; intento++) {
-
-        ESP_LOGI(TAG, "Intento %d/3 montando SD a 20 MHz", intento);
-        vTaskDelay(pdMS_TO_TICKS(100));
-
-        sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-        host.flags = SDMMC_HOST_FLAG_1BIT;
-        host.max_freq_khz = MMC_SPEED;
-
-        sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-        slot.width = 1;
-        slot.clk = MMC_CLK;
-        slot.cmd = MMC_CMD;
-        slot.d0  = MMC_D0;
-        slot.d1  = MMC_D1;
-        slot.d2  = MMC_D2;
-        slot.d3  = MMC_D3;
-        slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-
-        esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
-            .format_if_mount_failed = false,
-            .max_files = 4,
-            .allocation_unit_size = 16 * 1024
-        };
-
-        esp_err_t ret = esp_vfs_fat_sdmmc_mount("/sdcard", &host, &slot, &mount_cfg, &card);
-
-        if (ret == ESP_OK) {
-
-            is_initialized = true;
-
-            ESP_LOGI(TAG, "SD montada correctamente a 20 MHz");
-
-            return true;
-        }
-
-        card = NULL;
-
-        ESP_LOGW(TAG, "Falló montaje a 20 MHz (intento %d/3)", intento);
-
-        sdmmc_host_deinit();
-
-        gpio_reset_pin(MMC_CLK);
-        gpio_reset_pin(MMC_CMD);
-        gpio_reset_pin(MMC_D0);
-        gpio_reset_pin(MMC_D1);
-        gpio_reset_pin(MMC_D2);
-        gpio_reset_pin(MMC_D3);
-
-        gpio_set_direction(MMC_CLK, GPIO_MODE_INPUT);
-        gpio_set_direction(MMC_CMD, GPIO_MODE_INPUT);
-        gpio_set_direction(MMC_D0, GPIO_MODE_INPUT);
-        gpio_set_direction(MMC_D1, GPIO_MODE_INPUT);
-        gpio_set_direction(MMC_D2, GPIO_MODE_INPUT);
-        gpio_set_direction(MMC_D3, GPIO_MODE_INPUT);
-
-        gpio_set_pull_mode(MMC_CLK, GPIO_FLOATING);
-        gpio_set_pull_mode(MMC_CMD, GPIO_FLOATING);
-        gpio_set_pull_mode(MMC_D0, GPIO_FLOATING);
-        gpio_set_pull_mode(MMC_D1, GPIO_FLOATING);
-        gpio_set_pull_mode(MMC_D2, GPIO_FLOATING);
-        gpio_set_pull_mode(MMC_D3, GPIO_FLOATING);
-    }
-
-    // Fallaron los 3 intentos
-    ESP_LOGE(TAG, "No se pudo montar la SD a 20 MHz");
-    ESP_LOGE(TAG, "Reiniciando el equipo...");
+    ESP_LOGE(TAG, "No se pudo montar la SD a 25 ni 20 MHz");
 
     gias_error_handler(6);
 
@@ -246,6 +213,8 @@ void sd_deinit(void)
     gpio_set_pull_mode(MMC_D2, GPIO_FLOATING);
     gpio_set_pull_mode(MMC_D3, GPIO_FLOATING);
 
+    vTaskDelay(pdMS_TO_TICKS(50));
+    
     is_initialized = false;
 }
 

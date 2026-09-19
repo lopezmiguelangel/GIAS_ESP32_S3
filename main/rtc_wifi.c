@@ -228,12 +228,23 @@ void rtc_i2c_deinit(void)
 }
 
 // Conecta a WiFi y espera asociación al AP
+static void wifi_silenciar_logs(void)
+{
+    esp_log_level_set("wifi_init", ESP_LOG_WARN);
+    esp_log_level_set("phy_init", ESP_LOG_WARN);
+    esp_log_level_set("wifi", ESP_LOG_WARN);
+    esp_log_level_set("phy", ESP_LOG_WARN);
+    esp_log_level_set("pp", ESP_LOG_WARN);
+    esp_log_level_set("net80211", ESP_LOG_WARN);
+}
 static bool wifi_connect(const char *ssid, const char *pass)
 {
     nvs_flash_init();
     esp_netif_init();
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
+
+    wifi_silenciar_logs();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
 
