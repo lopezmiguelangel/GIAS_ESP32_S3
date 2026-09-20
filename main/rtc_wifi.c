@@ -11,7 +11,7 @@
 #include "freertos/task.h"
 
 // ESP-IDF
-#include "esp_log.h"
+//#include "esp_log.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "esp_netif.h"
@@ -24,7 +24,7 @@
 // Proyecto
 #include "rtc_wifi.h"
 
-static const char *TAG = "RTC";
+//static const char *TAG = "RTC";
 
 // I2C
 #define I2C_PORT    I2C_NUM_0
@@ -51,13 +51,13 @@ static bool ds3231_get_time(i2c_master_dev_handle_t dev, struct tm *t)
     esp_err_t err = i2c_master_transmit_receive(dev, &reg, 1, data, 7, pdMS_TO_TICKS(100));
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "RTC READ ERROR: %s", esp_err_to_name(err));
+        //ESP_LOGE(TAG, "RTC READ ERROR: %s", esp_err_to_name(err));
         return false;
     }
 
-    ESP_LOGI(TAG, "RTC RECIBIDO: %02X %02X %02X %02X %02X %02X %02X",
+    /*ESP_LOGI(TAG, "RTC RECIBIDO: %02X %02X %02X %02X %02X %02X %02X",
              data[0], data[1], data[2], data[3],
-             data[4], data[5], data[6]);
+             data[4], data[5], data[6]);*/
 
     t->tm_sec  = bcd2dec(data[0]);
     t->tm_min  = bcd2dec(data[1]);
@@ -84,9 +84,9 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
         dec2bcd(t->tm_year - 100)
     };
 
-    ESP_LOGI(TAG, "RTC ENVIADO: %02X %02X %02X %02X %02X %02X %02X %02X",
+    /*ESP_LOGI(TAG, "RTC ENVIADO: %02X %02X %02X %02X %02X %02X %02X %02X",
              data[0], data[1], data[2], data[3],
-             data[4], data[5], data[6], data[7]);
+             data[4], data[5], data[6], data[7]);*/
 
     esp_err_t err;
 
@@ -96,12 +96,11 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
         err = i2c_master_transmit(dev, data, 8, pdMS_TO_TICKS(100));
 
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "RTC WRITE OK (intento %d)", intento);
+            //ESP_LOGI(TAG, "RTC WRITE OK (intento %d)", intento);
             break;
         }
 
-        ESP_LOGW(TAG, "RTC WRITE ERROR (intento %d): %s",
-                 intento, esp_err_to_name(err));
+        //ESP_LOGW(TAG, "RTC WRITE ERROR (intento %d): %s", intento, esp_err_to_name(err));
 
         vTaskDelay(pdMS_TO_TICKS(RTC_DELAY_MS));
     }
@@ -122,12 +121,11 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
         );
 
         if (err == ESP_OK) {
-            ESP_LOGI(TAG, "RTC READ OK (intento %d)", intento);
+            //ESP_LOGI(TAG, "RTC READ OK (intento %d)", intento);
             break;
         }
 
-        ESP_LOGW(TAG, "RTC READ ERROR (intento %d): %s",
-                 intento, esp_err_to_name(err));
+        //ESP_LOGW(TAG, "RTC READ ERROR (intento %d): %s", intento, esp_err_to_name(err));
 
         vTaskDelay(pdMS_TO_TICKS(RTC_DELAY_MS));
     }
@@ -135,7 +133,7 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
     if (err != ESP_OK)
         return false;
 
-    ESP_LOGI(TAG, "RTC RECIBIDO: %02X %02X %02X %02X %02X %02X %02X",
+    /*ESP_LOGI(TAG, "RTC RECIBIDO: %02X %02X %02X %02X %02X %02X %02X",
              received[0], received[1], received[2],
              received[3], received[4], received[5],
              received[6]);
@@ -146,7 +144,7 @@ static bool ds3231_set_time(i2c_master_dev_handle_t dev, struct tm *t)
              bcd2dec(received[6]) + 2000,
              bcd2dec(received[2]),
              bcd2dec(received[1]),
-             bcd2dec(received[0]));
+             bcd2dec(received[0]));*/
 
     return true;
 }
@@ -166,11 +164,11 @@ static bool i2c_init(void)
     esp_err_t err = i2c_new_master_bus(&bus_config, &g_bus);
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C BUS INIT ERROR: %s", esp_err_to_name(err));
+        //ESP_LOGE(TAG, "I2C BUS INIT ERROR: %s", esp_err_to_name(err));
         return false;
     }
 
-    ESP_LOGI(TAG, "I2C BUS OK");
+    //ESP_LOGI(TAG, "I2C BUS OK");
 
     i2c_device_config_t dev_config = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
@@ -181,18 +179,18 @@ static bool i2c_init(void)
     err = i2c_master_bus_add_device(g_bus, &dev_config, &g_dev);
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C DEVICE ERROR: %s", esp_err_to_name(err));
+        //ESP_LOGE(TAG, "I2C DEVICE ERROR: %s", esp_err_to_name(err));
         i2c_del_master_bus(g_bus);
         g_bus = NULL;
         return false;
     }
 
-    ESP_LOGI(TAG, "I2C DEVICE OK: direccion 0x%02X", DS3231_ADDR);
+    //ESP_LOGI(TAG, "I2C DEVICE OK: direccion 0x%02X", DS3231_ADDR);
 
     err = i2c_master_probe(g_bus, DS3231_ADDR, pdMS_TO_TICKS(100));
 
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "RTC PROBE ERROR: %s", esp_err_to_name(err));
+        //ESP_LOGE(TAG, "RTC PROBE ERROR: %s", esp_err_to_name(err));
         i2c_master_bus_rm_device(g_dev);
         i2c_del_master_bus(g_bus);
         g_dev = NULL;
@@ -200,7 +198,7 @@ static bool i2c_init(void)
         return false;
     }
 
-    ESP_LOGI(TAG, "RTC DETECTADO en 0x%02X", DS3231_ADDR);
+    //ESP_LOGI(TAG, "RTC DETECTADO en 0x%02X", DS3231_ADDR);
 
     return true;
 }
@@ -230,12 +228,12 @@ void rtc_i2c_deinit(void)
 // Conecta a WiFi y espera asociación al AP
 static void wifi_silenciar_logs(void)
 {
-    esp_log_level_set("wifi_init", ESP_LOG_WARN);
-    esp_log_level_set("phy_init", ESP_LOG_WARN);
-    esp_log_level_set("wifi", ESP_LOG_WARN);
-    esp_log_level_set("phy", ESP_LOG_WARN);
-    esp_log_level_set("pp", ESP_LOG_WARN);
-    esp_log_level_set("net80211", ESP_LOG_WARN);
+    //esp_log_level_set("wifi_init", ESP_LOG_WARN);
+    //esp_log_level_set("phy_init", ESP_LOG_WARN);
+    //esp_log_level_set("wifi", ESP_LOG_WARN);
+    //esp_log_level_set("phy", ESP_LOG_WARN);
+    //esp_log_level_set("pp", ESP_LOG_WARN);
+    //esp_log_level_set("net80211", ESP_LOG_WARN);
 }
 static bool wifi_connect(const char *ssid, const char *pass)
 {
@@ -326,7 +324,7 @@ static bool sntp_get_time(int gmt_offset_seconds, struct tm *t)
 
     return true;
 }
-
+/*
 // Punto de entrada: obtiene hora (SNTP + RTC), decide cuál usar y actualiza el reloj interno
 struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
 {
@@ -353,22 +351,22 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
 
         for (int intento = 1; intento <= RTC_RETRIES; intento++) {
 
-            ESP_LOGI(TAG, "RTC READ: intento %d", intento);
+            //ESP_LOGI(TAG, "RTC READ: intento %d", intento);
 
             if (ds3231_get_time(g_dev, &rtc_time)) {
-                ESP_LOGI(TAG, "RTC READ OK (intento %d)", intento);
+                //ESP_LOGI(TAG, "RTC READ OK (intento %d)", intento);
                 rtc_ok = true;
                 break;
             }
 
-            ESP_LOGW(TAG, "RTC READ ERROR (intento %d)", intento);
+            //ESP_LOGW(TAG, "RTC READ ERROR (intento %d)", intento);
 
             if (intento < RTC_RETRIES)
                 vTaskDelay(pdMS_TO_TICKS(RTC_DELAY_MS));
         }
 
         if (!rtc_ok)
-            ESP_LOGE(TAG, "RTC READ: fallo en los intentos");
+            //ESP_LOGE(TAG, "RTC READ: fallo en los intentos");
     }
 
     // Decidir qué hora usar
@@ -391,10 +389,10 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
         if (!fecha_ok || diff_hora > 60) {
 
             if (ds3231_set_time(g_dev, &net_time)) {
-                ESP_LOGI(TAG, "RTC actualizado y verificado");
+                //ESP_LOGI(TAG, "RTC actualizado y verificado");
                 result = net_time;
             } else {
-                ESP_LOGE(TAG, "NO SE PUDO ACTUALIZAR EL RTC");
+                //ESP_LOGE(TAG, "NO SE PUDO ACTUALIZAR EL RTC");
                 result = rtc_time;
             }
 
@@ -404,23 +402,23 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
 
     } else if (rtc_ok) {
 
-        ESP_LOGW(TAG, "Usando solo RTC");
+        //ESP_LOGW(TAG, "Usando solo RTC");
         result = rtc_time;
 
     } else if (sntp_ok) {
 
         if (ds3231_set_time(g_dev, &net_time)) {
-            ESP_LOGI(TAG, "RTC configurado con SNTP y verificado");
+            //ESP_LOGI(TAG, "RTC configurado con SNTP y verificado");
             result = net_time;
         } else {
-            ESP_LOGE(TAG, "NO SE PUDO CONFIGURAR EL RTC CON SNTP");
+            //ESP_LOGE(TAG, "NO SE PUDO CONFIGURAR EL RTC CON SNTP");
             result = net_time;
         }
 
     } else {
 
         // Sin hora utilizable: reiniciar
-        ESP_LOGE(TAG, "No hay hora, reiniciando...");
+        //ESP_LOGE(TAG, "No hay hora, reiniciando...");
 
         rtc_i2c_deinit();
 
@@ -431,6 +429,60 @@ struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
     rtc_i2c_deinit();
 
     wifi_deinit();
+
+    // Actualizar reloj interno del ESP32
+    time_t t = mktime(&result);
+
+    struct timeval tv = {
+        .tv_sec = t,
+        .tv_usec = 0
+    };
+
+    settimeofday(&tv, NULL);
+
+    return result;
+}*/
+
+struct tm rtc_wifi_sync(const char *ssid, const char *password, int gmt)
+{
+    struct tm rtc_time = {0}, result = {0};
+
+    bool rtc_ok = false;
+
+    //ESP_LOGI(TAG, "PRUEBA: WiFi/SNTP deshabilitado");
+
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    // Leer RTC
+    if (i2c_init()) {
+
+        for (int intento = 1; intento <= RTC_RETRIES; intento++) {
+
+            //ESP_LOGI(TAG, "RTC READ: intento %d", intento);
+
+            if (ds3231_get_time(g_dev, &rtc_time)) {
+                //ESP_LOGI(TAG, "RTC READ OK (intento %d)", intento);
+                rtc_ok = true;
+                break;
+            }
+
+            //ESP_LOGW(TAG, "RTC READ ERROR (intento %d)", intento);
+
+            if (intento < RTC_RETRIES)
+                vTaskDelay(pdMS_TO_TICKS(RTC_DELAY_MS));
+        }
+    }
+
+    if (rtc_ok) {
+        result = rtc_time;
+        //ESP_LOGI(TAG, "PRUEBA: usando hora del RTC, sin WiFi/SNTP");
+    } else {
+        //ESP_LOGE(TAG, "PRUEBA: RTC no disponible");
+        rtc_i2c_deinit();
+        return result;
+    }
+
+    rtc_i2c_deinit();
 
     // Actualizar reloj interno del ESP32
     time_t t = mktime(&result);

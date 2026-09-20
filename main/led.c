@@ -19,28 +19,39 @@ static const char *TAG = "LED";
 #define LED_ON  0
 #define LED_OFF 1
 
-static TaskHandle_t led_task_handle = NULL;
+TaskHandle_t led_task_handle = NULL;
 
 // Parpadeo lento del LED para indicar que el sistema está vivo
-static void led_status_task(void *pvParameters)
+void led_status_task(void *pvParameters)
 {
-    while (1) {
+    ESP_LOGI(TAG, "Led status task creado");
+    while(1) {
         gpio_set_level(PIN_LED, LED_ON);
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50));
         gpio_set_level(PIN_LED, LED_OFF);
-        vTaskDelay(pdMS_TO_TICKS(4900));
+        vTaskDelay(pdMS_TO_TICKS(1950));
     }
+    vTaskDelete(NULL);
+}
+
+void led_blink_count(int cantidad)
+{
+    for (int i = 0; i < cantidad; i++) {
+        gpio_set_level(PIN_LED, LED_ON);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        gpio_set_level(PIN_LED, LED_OFF);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 // Configura el LED y crea la tarea de parpadeo
 void led_init(void)
 {
-    vTaskDelay(pdMS_TO_TICKS(100));
-
     gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
     gpio_set_level(PIN_LED, LED_OFF);
-
-    xTaskCreate(led_status_task, "led_status", 2048, NULL, 1, &led_task_handle);
+    //xTaskCreate(led_status_task, "led_status", 2048, NULL, 1, &led_task_handle);
     //ESP_LOGI(TAG, "LED inicializado");
 }
 
@@ -57,19 +68,19 @@ void gias_error_handler(int titileos)
     gpio_set_direction(PIN_LED, GPIO_MODE_OUTPUT);
 
     // Preámbulo fijo
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 20; i++) {
         gpio_set_level(PIN_LED, LED_ON);
-        vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(100));
         gpio_set_level(PIN_LED, LED_OFF);
-        vTaskDelay(pdMS_TO_TICKS(250));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
     // Código: "titileos" destellos lentos
     for (int i = 0; i < titileos; i++) {
         gpio_set_level(PIN_LED, LED_ON);
-        vTaskDelay(pdMS_TO_TICKS(2500));
+        vTaskDelay(pdMS_TO_TICKS(1500));
         gpio_set_level(PIN_LED, LED_OFF);
-        vTaskDelay(pdMS_TO_TICKS(2500));
+        vTaskDelay(pdMS_TO_TICKS(1500));
     }
 
     // Reinicio
@@ -78,3 +89,4 @@ void gias_error_handler(int titileos)
 
     esp_restart();
 }
+
