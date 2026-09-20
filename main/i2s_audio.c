@@ -3,7 +3,7 @@
 // ESP-IDF
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
-#include "esp_log.h"
+//#include "esp_log.h"
 
 // Proyecto
 #include "i2s_audio.h"
@@ -29,7 +29,7 @@ static int16_t stereo_buffer[STEREO_BUFFER_SIZE];
 // Configura el canal I2S en modo maestro, stereo 16-bit
 void i2s_init(void)
 {
-    ESP_LOGI(TAG, "Inicializando I2S...");
+    //ESP_LOGI(TAG, "Inicializando I2S...");
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.dma_desc_num  = I2S_DMA_DESC_NUM;
@@ -64,13 +64,13 @@ void i2s_init(void)
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_chan, &std_cfg));
     ESP_ERROR_CHECK(i2s_channel_enable(rx_chan));
 
-    ESP_LOGI(TAG, "I2S inicializado");
+    //ESP_LOGI(TAG, "I2S inicializado");
 }
 
 // Libera el canal I2S y deja los pines en alta impedancia
 void i2s_deinit(void)
 {
-    ESP_LOGI(TAG, "Desinicializando I2S...");
+    //ESP_LOGI(TAG, "Desinicializando I2S...");
 
     if (rx_chan) {
         i2s_channel_disable(rx_chan);
@@ -93,7 +93,7 @@ void i2s_deinit(void)
     gpio_set_pull_mode(I2S_WS,  GPIO_FLOATING);
     gpio_set_pull_mode(I2S_DIN, GPIO_FLOATING);
 
-    ESP_LOGI(TAG, "I2S desinicializado, pines en alta impedancia");
+    //ESP_LOGI(TAG, "I2S desinicializado, pines en alta impedancia");
 }
 
 // Lee muestras del canal I2S y las convierte de stereo a mono (canal izquierdo)

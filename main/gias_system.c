@@ -179,7 +179,7 @@ static bool gias_record_setup(record_ctx_t *ctx)
     psram_to_use -= (psram_to_use % bytes_per_read);
 
     if (psram_to_use == 0) {
-        ESP_LOGE(TAG, "PSRAM insuficiente");
+        ////ESP_LOGE(TAG, "PSRAM insuficiente");
         return false;
     }
 
@@ -188,15 +188,15 @@ static bool gias_record_setup(record_ctx_t *ctx)
     ctx->bytes_por_ciclo = ctx->max_reads * bytes_per_read;
     ctx->buffer_size   = psram_to_use;
 
-    ESP_LOGI(TAG,
+    /*ESP_LOGI(TAG,
              "Configuración PSRAM: %u bytes por ciclo, %u lecturas, notificar en %u (%.1f%%)",
              ctx->bytes_por_ciclo, ctx->max_reads, ctx->ciclo_inicio,
-             100.0f - PORCENTAJE_ADELANTO);
+             100.0f - PORCENTAJE_ADELANTO);*/
 
     ctx->buffer = heap_caps_malloc(psram_to_use, MALLOC_CAP_SPIRAM);
 
     if (!ctx->buffer) {
-        ESP_LOGE(TAG, "No se pudo reservar PSRAM");
+        //ESP_LOGE(TAG, "No se pudo reservar PSRAM");
         return false;
     }
 
@@ -221,13 +221,12 @@ static void sd_task(void *pvParameters)
 
         uint64_t t_inicio_sd = esp_timer_get_time();
 
-        ESP_LOGI(TAG, "SD Task: Escribiendo buffer %u", buffers_escritos + 1);
+        //ESP_LOGI(TAG, "SD Task: Escribiendo buffer %u", buffers_escritos + 1);
 
         power_sd_rtc_on();
         sd_init(false);
 
         if (is_sd_mounted()) {
-
             // Escribir audio en bloques
             FILE *f = fopen(g_filename, "ab");
 
@@ -244,8 +243,7 @@ static void sd_task(void *pvParameters)
                     size_t escritos = fwrite(g_buffer + total_escrito, 1, bloque, f);
 
                     if (escritos != bloque) {
-                        ESP_LOGE(TAG, "ERROR fwrite: %u/%u bytes",
-                                 (unsigned)escritos, (unsigned)bloque);
+                        //ESP_LOGE(TAG, "ERROR fwrite: %u/%u bytes", (unsigned)escritos, (unsigned)bloque);
                         error_escritura = true;
                         break;
                     }
@@ -254,20 +252,20 @@ static void sd_task(void *pvParameters)
                 }
 
                 if (!error_escritura) {
-                    ESP_LOGI(TAG, "fwrite OK: %u bytes", (unsigned)total_escrito);
+                    //ESP_LOGI(TAG, "fwrite OK: %u bytes", (unsigned)total_escrito);
 
                     buffers_escritos++;
                     total_bytes_final += total_escrito;
 
-                    ESP_LOGI(TAG,
+                    /*ESP_LOGI(TAG,
                              "SD Task: Buffer %u escrito (%u bytes totales)",
-                             buffers_escritos, total_bytes_final);
+                             buffers_escritos, total_bytes_final);*/
 
                     write_wav_header(g_filename, total_bytes_final);
 
-                    ESP_LOGI(TAG,
+                    /*ESP_LOGI(TAG,
                              "SD Task: Header WAV actualizado (%u bytes)",
-                             total_bytes_final);
+                             total_bytes_final);*/
                 }
 
                 fclose(f);
@@ -280,9 +278,8 @@ static void sd_task(void *pvParameters)
 
         uint64_t t_fin_sd = esp_timer_get_time();
 
-        ESP_LOGI(TAG, "Ciclo SD: %.3f segundos",
-                 (t_fin_sd - t_inicio_sd) / 1000000.0);
-
+        //ESP_LOGI(TAG, "Ciclo SD: %.3f segundos", (t_fin_sd - t_inicio_sd) / 1000000.0);
+        vTaskDelay(pdMS_TO_TICKS(100));
         sd_busy = false;
     }
 }
@@ -300,7 +297,7 @@ void gias_create_sd_task(void)
         1
     );
 
-    ESP_LOGI(TAG, "SD Task creada en Core 1");
+    //ESP_LOGI(TAG, "SD Task creada en Core 1");
 }
 
 // Calcula cuántos minutos corresponden a este bloque.
@@ -348,8 +345,7 @@ static void log_hora_fin(struct tm *t, int minutos)
         hora_fin++;
     }
 
-    ESP_LOGI(TAG, "Grabando %d minutos (hasta %02d:%02d)",
-             minutos, hora_fin % 24, min_fin);
+    //ESP_LOGI(TAG, "Grabando %d minutos (hasta %02d:%02d)", minutos, hora_fin % 24, min_fin);
 }
 
 // Abre el archivo: enciende SD, monta, crea cabecera.
@@ -364,7 +360,7 @@ static bool abrir_archivo(const char *filename)
     power_sd_rtc_off();
 
     if (!ok) {
-        ESP_LOGE(TAG, "Error creando header WAV para %s", filename);
+        //ESP_LOGE(TAG, "Error creando header WAV para %s", filename);
     }
 
     return ok;
@@ -384,7 +380,7 @@ static uint32_t grabar_ciclos(record_ctx_t *ctx, const char *filename,
 
         ciclo_actual++;
 
-        ESP_LOGI(TAG, "Ciclo %d", ciclo_actual);
+        //ESP_LOGI(TAG, "Ciclo %d", ciclo_actual);
 
         uint32_t reads_done = 0;
         bool esperando_escritura = false;
@@ -408,8 +404,7 @@ static uint32_t grabar_ciclos(record_ctx_t *ctx, const char *filename,
 
                 if (reads_done == ctx->ciclo_inicio && !esperando_escritura) {
 
-                    ESP_LOGI(TAG, "Ciclo %d: 90%% lleno, notificando SD task",
-                             ciclo_actual);
+                    //ESP_LOGI(TAG, "Ciclo %d: 90%% lleno, notificando SD task", ciclo_actual);
 
                     esperando_escritura = true;
 
@@ -426,17 +421,15 @@ static uint32_t grabar_ciclos(record_ctx_t *ctx, const char *filename,
 
         uint64_t t_fin = esp_timer_get_time();
 
-        ESP_LOGI(TAG, "Ciclo grabación: %.3f segundos",
-                 (t_fin - t_inicio_ciclo) / 1000000.0);
+        //ESP_LOGI(TAG, "Ciclo grabación: %.3f segundos", (t_fin - t_inicio_ciclo) / 1000000.0);
 
         while (sd_busy) {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(pdMS_TO_TICKS(100));
         }
 
         total_bytes += ctx->bytes_por_ciclo;
 
-        ESP_LOGI(TAG, "Ciclo %d completado. Archivo acumula: %u bytes",
-                 ciclo_actual, total_bytes);
+        //ESP_LOGI(TAG, "Ciclo %d completado. Archivo acumula: %u bytes", ciclo_actual, total_bytes);
     }
 
     return total_bytes;
@@ -453,7 +446,7 @@ static void avanzar_reloj(struct tm *t, int minutos)
 void gias_record_start(int minutos, struct tm *current_time)
 {
     if (minutos <= 0) {
-        ESP_LOGW(TAG, "Minutos <= 0, no se graba nada");
+        //ESP_LOGW(TAG, "Minutos <= 0, no se graba nada");
         return;
     }
 
@@ -466,11 +459,11 @@ void gias_record_start(int minutos, struct tm *current_time)
     struct tm tiempo_actual = *current_time;
     int minutos_restantes = minutos;
 
-    ESP_LOGI(TAG, "Grabación solicitada: %d minutos desde %02d:%02d:%02d",
+    /*ESP_LOGI(TAG, "Grabación solicitada: %d minutos desde %02d:%02d:%02d",
              minutos,
              tiempo_actual.tm_hour,
              tiempo_actual.tm_min,
-             tiempo_actual.tm_sec);
+             tiempo_actual.tm_sec);*/
 
     int16_t sample_buffer[SAMPLES_PER_READ];
 
@@ -478,7 +471,6 @@ void gias_record_start(int minutos, struct tm *current_time)
     int archivo_num = 1;
 
     while (minutos_restantes > 0) {
-
         int minutos_este_archivo =
             minutos_del_bloque(&tiempo_actual, minutos_restantes);
 
@@ -490,7 +482,7 @@ void gias_record_start(int minutos, struct tm *current_time)
 
         armar_nombre_archivo(&tiempo_actual, filename, sizeof(filename));
 
-        ESP_LOGI(TAG, "=== Archivo %d: %s ===", archivo_num, filename);
+        //ESP_LOGI(TAG, "=== Archivo %d: %s ===", archivo_num, filename);
 
         log_hora_fin(&tiempo_actual, minutos_este_archivo);
 
@@ -514,35 +506,29 @@ void gias_record_start(int minutos, struct tm *current_time)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
+    if (sd_task_handle) {
+        vTaskDelete(sd_task_handle);
+        sd_task_handle = NULL;
+    }
+
     free(ctx.buffer);
 
-    ESP_LOGI(TAG, "Grabación completada. Total: %u bytes en %d archivos",
-             total_bytes_escritos_general, archivo_num - 1);
+    //ESP_LOGI(TAG, "Grabación completada. Total: %u bytes en %d archivos", total_bytes_escritos_general, archivo_num - 1);
 }
 
 // Monta la SD con reintentos. Devuelve true si quedó montada.
 static bool gias_mount_sd(void)
 {
-    power_sd_rtc_off();
-    vTaskDelay(pdMS_TO_TICKS(100));
-
     power_sd_rtc_on();
     vTaskDelay(pdMS_TO_TICKS(100));
 
     for (int intento = 1; intento <= SD_MOUNT_RETRIES; intento++) {
-
-        ESP_LOGI(TAG, "Intento %d/%d montando SD", intento, SD_MOUNT_RETRIES);
-
         sd_init(false);
 
         if (is_sd_mounted()) {
             return true;
         }
-
-        ESP_LOGW(TAG, "Intento %d falló", intento);
     }
-
-    ESP_LOGE(TAG, "SD no montada tras %d intentos", SD_MOUNT_RETRIES);
     return false;
 }
 
@@ -550,11 +536,11 @@ static bool gias_mount_sd(void)
 static bool gias_ensure_files(void)
 {
     if (!sd_check_and_create_files()) {
-        ESP_LOGE(TAG, "Error: Archivos config.txt o calendar.csv no existen");
+        //ESP_LOGE(TAG, "Error: Archivos config.txt o calendar.csv no existen");
         return false;
     }
 
-    ESP_LOGI(TAG, "Archivos verificados");
+    //ESP_LOGI(TAG, "Archivos verificados");
     return true;
 }
 
@@ -562,39 +548,35 @@ static bool gias_ensure_files(void)
 static bool gias_read_config(char *ssid, char *password, int *gmt)
 {
     if (!sd_get_config(ssid, password, gmt)) {
-        ESP_LOGE(TAG, "Error: No se pudo leer config.txt");
+        //ESP_LOGE(TAG, "Error: No se pudo leer config.txt");
         return false;
     }
 
-    ESP_LOGI(TAG, "Config leída (SSID=%s, GMT=%d)", ssid, *gmt);
+    //ESP_LOGI(TAG, "Config leída (SSID=%s, GMT=%d)", ssid, *gmt);
     return true;
 }
 
 // Sincroniza la hora por WiFi + SNTP + RTC.
 static bool gias_sync_time(const char *ssid, const char *password, int gmt, struct tm *hora)
 {
-    ESP_LOGI(TAG, "Sincronizando RTC con WiFi...");
+    //ESP_LOGI(TAG, "Sincronizando RTC con WiFi...");
 
     *hora = rtc_wifi_sync(ssid, password, gmt);
 
-    ESP_LOGI(TAG, "Hora obtenida: %02d:%02d:%02d",
-             hora->tm_hour, hora->tm_min, hora->tm_sec);
+    //ESP_LOGI(TAG, "Hora obtenida: %02d:%02d:%02d", hora->tm_hour, hora->tm_min, hora->tm_sec);
     return true;
 }
 
 // Lee el calendario según la hora y devuelve estado/minutos.
 static bool gias_read_calendar(struct tm *hora, int *estado, int *minutos)
 {
-    ESP_LOGI(TAG, "Leyendo calendario...");
 
     sd_check_calendar(hora, estado, minutos);
 
     if (*estado == -1) {
-        ESP_LOGE(TAG, "Error: No se pudo leer calendar.csv");
         return false;
     }
 
-    ESP_LOGI(TAG, "Calendario: estado=%d minutos=%d", *estado, *minutos);
     return true;
 }
 
@@ -604,37 +586,63 @@ static void gias_power_off_sd_rtc(void)
     sd_deinit();
     power_sd_rtc_off();
 
-    ESP_LOGI(TAG, "SD+RTC apagados");
+    //ESP_LOGI(TAG, "SD+RTC apagados");
 }
 
 // Consulta el estado actual: SD, config, hora y calendario
 gias_status_t gias_get_status(void)
 {
     gias_status_t status = {0};
+    bool error = false;
 
     char ssid[32] = {0};
     char password[64] = {0};
     int gmt = 0;
 
+    ESP_LOGI(TAG, "gias_get_status(): inicio");
+
     if (!gias_mount_sd()) {
+        ESP_LOGI(TAG, "gias_mount_sd(): FALLÓ");
+        gias_power_off_sd_rtc();
+        status.estado = -1;
+        led_blink_count(2);
+        return status;
+    }
+
+    ESP_LOGI(TAG, "gias_mount_sd(): OK");
+    
+    if (!gias_ensure_files()) {
+        led_blink_count(2);
+        error = true;
+    }
+
+    if (!error && !gias_read_config(ssid, password, &gmt)) {
+        led_blink_count(2);
+        error = true;
+    }
+
+    if (!error && !gias_sync_time(ssid, password, gmt, &status.hora)) {
+        led_blink_count(2);
+        error = true;
+    }
+
+    if (!error && !gias_read_calendar(&status.hora, &status.estado, &status.minutos)) {
+        led_blink_count(2);
+        error = true;
+    }
+
+    if (error) {
         gias_power_off_sd_rtc();
         status.estado = -1;
         return status;
     }
-
-    ESP_LOGI(TAG, "SD montada OK");
-
-    if (!gias_ensure_files() ||
-        !gias_read_config(ssid, password, &gmt) ||
-        !gias_sync_time(ssid, password, gmt, &status.hora) ||
-        !gias_read_calendar(&status.hora, &status.estado, &status.minutos)) {
-
-        gias_power_off_sd_rtc();
-        status.estado = -1;
-        return status;
-    }
-
     gias_power_off_sd_rtc();
+
+    ESP_LOGI(TAG, "gias_get_status(): OK - estado=%d, minutos=%d, hora=%02d:%02d:%02d",
+         status.estado, status.minutos,
+         status.hora.tm_hour, status.hora.tm_min, status.hora.tm_sec);
+    
+    led_blink_count(1);
 
     return status;
 }
